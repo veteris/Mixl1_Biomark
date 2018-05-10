@@ -1,0 +1,306 @@
+---
+title: "Biomark_Mixl1"
+author: "Naz Salehin"
+date: "May 1, 2018"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+
+library(ggplot2)
+library(ggpubr)
+library(ggrepel)
+library(viridis)
+```
+
+### Load the biomark CSV into a tibble:
+
+```{r}
+  biomark_load <- function(path_to_qPCR_data){
+  # path_to_qPCR_data <- "NDX2.csv"
+  biomark_raw <- read_csv(file=path_to_qPCR_data, col_names = TRUE, skip = 11)
+  biomark_named <- biomark_raw %>% rename( Gene = Name_1 ) %>% select(ID, Name, Gene, Value, Call, Threshold)
+
+  # Filtered out Failed calls and high Ct values
+  biomark_filtered <- biomark_named %>% filter( Call != "Fail" & Value < 24 & !grepl("H2O",Name))
+
+  # Filter out samples with less than 30 good Ct values
+  
+  biomark_data <- biomark_filtered %>% filter(!(Name %in% (biomark_filtered %>% count(Name) %>% filter (n < 30) %>% .$Name)))
+  return (biomark_data)
+  }
+
+  biomark_hk_heatmap <- function(biomark_data, housekeeping_genes){
+
+  biomark_hkgenes <- biomark_data %>% filter(Gene %in% housekeeping_genes)
+  biomark_hkgenes %>% group_by(Gene) %>% summarise(mean = mean(Value), sd = sd(Value))
+  hk_heatmap <- ggplot(biomark_hkgenes ,aes(x=Name, y = Gene))+
+    geom_tile(aes(fill=Value)) +
+    scale_fill_gradient(limits=c(1,24))+
+    theme_classic()+
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1))
+  return (hk_heatmap)
+  }
+  
+  biomark_hk_scatter <- function(biomark_data, housekeeping_genes){
+  biomark_hkgenes <- biomark_data %>% filter(Gene %in% housekeeping_genes)
+  biomark_hkgenes %>% group_by(Gene) %>% summarise(mean = mean(Value), sd = sd(Value))    
+  hk_scatter <- ggplot(biomark_hkgenes) +
+    geom_jitter(aes(x=Gene, y=Value))+
+    scale_y_continuous(limits=c(0,24))+
+    theme_classic()
+  
+  }
+  
+  biomark_remove_samples <- function (biomark, sample_names){
+  return (biomark %>% filter( !(Name %in% sample_names)))
+}
+```
+
+```{r}
+  NDX1 <- biomark_load("NDX1.csv")
+  NDX2 <- biomark_load("NDX2.csv")
+  housekeeping_genes <- c("Gapdh", "Tbp", "bActin")
+  NDX1_heatmap <- biomark_hk_heatmap(NDX1, housekeeping_genes)
+  NDX2_heatmap <- biomark_hk_heatmap(NDX2, housekeeping_genes)
+remove_NDX1 <- c("Cri2#15 EpiSC 3", "FM No Dox Rep 5 Day 1" )
+remove_NDX2 <- c("A2Lox.Cre EpiSC 1", "Cri1FM#12 EpiSC 3", "Cri2#15 Rep 3 Day 6", "Cri2#15 Rep 4 Day 4", "FM No Dox Rep 5 Day 1", "FM No Dox Rep 5 Day 6", "A2Lox.Cre Rep 4 Day 7") 
+NDX1_cleaned <- biomark_remove_samples(NDX1, remove_NDX1)
+NDX2_cleaned <- biomark_remove_samples(NDX2, remove_NDX2)
+
+
+# Use rows with values for Gapdh and bActin
+
+
+NDX1_use <- NDX1_cleaned %>% filter(Name %in% intersect(
+  NDX1_cleaned %>% filter(Gene == "Gapdh") %>% .$Name,
+  NDX1_cleaned %>% filter(Gene == "bActin") %>% .$Name
+)) %>% select(Name, Gene, Value)
+hk_norm_1 <- NDX1_use %>% filter(Gene == "Gapdh" | Gene == "bActin") %>% group_by(Name) %>% summarise(housekeeping_avg = mean(Value))
+NDX1_dCT <- NDX1_use %>% inner_join(hk_norm_1) %>% mutate(negdCt = housekeeping_avg-Value)
+
+NDX2_use <- NDX2_cleaned %>% filter(Name %in% intersect(
+  NDX2_cleaned %>% filter(Gene == "Gapdh") %>% .$Name,
+  NDX2_cleaned %>% filter(Gene == "bActin") %>% .$Name
+)) %>% select(Name, Gene, Value)
+hk_norm_2 <- NDX2_use %>% filter(Gene == "Gapdh" | Gene == "bActin") %>% group_by(Name) %>% summarise(housekeeping_avg = mean(Value))
+NDX2_dCT <- NDX2_use %>% inner_join(hk_norm_2) %>% mutate(negdCt = housekeeping_avg-Value)
+```
+
+#### Analysis of common samples
+
+The common samples that were not filtered are the YC8 Rep 3 Day 2 and YC8 Rep 2 Day 2 Samples
+
+For YC8 Rep 3 Day 2:
+```{r}
+# Analyse between plates
+# Common samples: Name == "YC8 Rep 3 Day 2", Name == "YC8 Rep 2 Day 2"
+common_1 <-NDX1_dCT %>% filter(Name == "YC8 Rep 3 Day 2" ) %>% arrange(Name, Gene) 
+common_2 <-NDX2_dCT %>% filter(Name == "YC8 Rep 3 Day 2" ) %>% arrange(Name, Gene) 
+
+common_1 <- common_1 %>% filter(Gene %in% intersect(common_1$Gene, common_2$Gene))
+common_2 <- common_2 %>% filter(Gene %in% intersect(common_1$Gene, common_2$Gene))
+
+cor(common_1$negdCt, common_2$negdCt)
+common_sample_A = data_frame(Plate_1=common_1$negdCt, Plate_2=common_2$negdCt)
+ggscatter(common_sample_A, x="Plate_1", y="Plate_2", add="reg.line", conf.int = T, xlim=c(-15,5), ylim=c(-15,5) ) + stat_cor(method="pearson", label.x=-10,label.y=-5)
+```
+
+For YC8 Rep 2 Day 2:
+```{r}
+# Analyse between plates
+# Common samples: Name == "YC8 Rep 3 Day 2", Name == "YC8 Rep 2 Day 2"
+common_1 <-NDX1_dCT %>% filter(Name == "YC8 Rep 2 Day 2") %>% arrange(Name, Gene) 
+common_2 <-NDX2_dCT %>% filter(Name == "YC8 Rep 2 Day 2" ) %>% arrange(Name, Gene) 
+
+common_1 <- common_1 %>% filter(Gene %in% intersect(common_1$Gene, common_2$Gene))
+common_2 <- common_2 %>% filter(Gene %in% intersect(common_1$Gene, common_2$Gene))
+
+common_sample_B = data_frame(Plate_1=common_1$negdCt, Plate_2=common_2$negdCt)
+ggscatter(common_sample_B, x="Plate_1", y="Plate_2", add="reg.line", conf.int = T, xlim=c(-15,5), ylim=c(-15,5) ) + stat_cor(method="pearson", label.x=-10,label.y=-5)
+```
+
+
+#### Find the list of genes that are common to both plates before merging
+
+```{r}
+common_genes <- intersect(unique(NDX1_dCT$Gene), unique(NDX2_dCT$Gene))
+common_genes
+```
+
+
+#### Collect and combine the two biomarks
+
+```{r}
+NDX <- bind_rows(
+  NDX2_dCT %>% filter(Gene %in% common_genes),
+  NDX1_dCT %>% filter(Gene %in% common_genes, Name != "YC8 Rep 2 Day 2" & Name != "YC8 Rep 3 Day 2") 
+)
+```
+
+#### Sanitize sample names
+
+```{r}
+
+NDX_san <- NDX %>% mutate(Name_san = sub("EpiSC\ (.)", "Rep \\1 Day 0", Name)) %>%  mutate(Day = gsub(".*Day\ (.)", "\\1", Name_san))   %>% mutate(Rep = gsub(".*Rep\ (.)\ Day\ .", "\\1", Name_san))  %>% mutate(Cell_line = gsub("\ Rep\ .\ Day\ .", "", Name_san)) %>% select(Name_san, Cell_line, Day, Rep, Gene, negdCt) %>% filter(Gene != "Gapdh" & Gene != "bActin" & Gene!= "Mixl1" & Gene != "FLAGMIX" )%>% filter(Cell_line != "YC8")
+
+# Remove YC8 as well
+NDX_matrix <- NDX_san %>% spread(key=Gene, value=negdCt) %>% replace(.,is.na(.),-16) 
+
+```
+
+
+#### Compare days to decide which days to do analysis on
+
+Check pairwise correlation between pairs of days eg. Day 3 vs Day 4, and Day 4 vs Day 5, Day 5 vs Day 6, etc
+```{r}
+library(corrplot)
+NDX_day_corr <- NDX_san %>% filter(Day %in% seq(1,7))
+NDX_dc_matrix <- NDX_day_corr %>% spread(key=Day, value=negdCt) %>% replace(.,is.na(.), -16)
+corr_dc <- cor(NDX_dc_matrix[,4:10])
+corrplot(corr_dc,method="color",addCoef.col = "white")
+
+```
+
+
+
+```{r}
+NDX_matrix <- NDX_san %>% spread(key=Gene, value=negdCt) %>% replace(.,is.na(.),-16) 
+NDX_san_na <- NDX_matrix %>% gather(Gene, negdCt, Acvr1:Zic1)%>%group_by(Cell_line, Day, Gene) %>% summarise(mean_negdCt = mean(negdCt)) %>% mutate(Name_san = paste0(Cell_line," Day ", Day))
+master_heatmap <- ggplot(NDX_san_na ,aes(x=Name_san, y = Gene))+
+    geom_tile(aes(fill=mean_negdCt)) +
+    scale_fill_gradient(limits=c(-16,2))+
+  
+  theme_classic()+
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1))
+  master_heatmap
+```
+
+
+### Analysis of Day 5 samples
+
+Using the end point analysis of the Tsankov(2015) paper
+
+```{r}
+
+# Analysis of Day 5 Samples
+
+# Work from NDX1_use and NDX2_use
+# First combine the two plates
+
+NDX_use <- bind_rows(
+  NDX2_use %>% filter(Gene %in% common_genes),
+  NDX1_use %>% filter(Gene %in% common_genes, Name != "YC8 Rep 2 Day 2" & Name != "YC8 Rep 3 Day 2") 
+)
+
+# Sanitise the names
+
+NDX_use_san <- NDX_use %>% mutate(Name_san = sub("EpiSC\ (.)", "Rep \\1 Day 0", Name)) %>%  mutate(Day = gsub(".*Day\ (.)", "\\1", Name_san))   %>% mutate(Rep = gsub(".*Rep\ (.)\ Day\ .", "\\1", Name_san))  %>% mutate(Cell_line = gsub("\ Rep\ .\ Day\ .", "", Name_san)) %>% select(Name_san, Cell_line, Day, Rep, Gene, Value) 
+# %>% filter(Cell_line != "YC8")
+NDX_use_san_repna <- NDX_use_san %>% spread(key=Gene, value=Value) %>% replace(.,is.na(.), 24) %>% gather(Gene, Value, Acvr1:Zic1)
+hk_norm_NDX <- NDX_use_san %>% filter(Gene == "Gapdh" | Gene == "bActin") %>% group_by(Name_san) %>% summarise(housekeeping_avg = mean(Value))
+NDX_usr_dCt <- NDX_use_san_repna %>% inner_join(hk_norm_NDX) %>% mutate(negdCt = housekeeping_avg-Value) %>% select(-Value, -housekeeping_avg)
+
+
+
+get_weights <- function(samples_dCt, day){
+  ddCt <- samples_dCt %>% filter(Day == day) %>% inner_join(., samples_dCt %>% filter(Day == 0), by=c("Cell_line" ="Cell_line", "Rep" = "Rep", "Gene" = "Gene")) %>% mutate(negddCt = negdCt.x - negdCt.y) %>% select(Name_san = Name_san.x, Cell_line, Day = Day.x, Gene, negddCt)
+  weights <- ddCt %>% group_by(Gene) %>% summarise( weight = mean(negddCt)) %>% filter(!(Gene %in% c("Gapdh", "bActin"))) %>% spread(key=Gene, value=weight)
+  weights[as.vector(weights < 0)] <- 0
+  return(weights)
+}
+
+get_z_scores <- function(samples_dCt, day){
+  day_0 <- samples_dCt %>% filter(Day == 0) %>% group_by(Gene) %>% summarise(expr_ref = list(negdCt))
+  day_x <- samples_dCt %>% filter(Day == day) %>% group_by(Cell_line,Gene) %>% summarise(expr = list(negdCt))
+  combined_dx_d0 <- inner_join(day_x %>% filter(Gene != "Gapdh" & Gene != "bActin"), day_0)
+  dx_d0_p <- combined_dx_d0 %>% rowwise %>% mutate(p_val = t.test(unlist(expr_ref), unlist(expr), alternative="l", paired=F, var.equal=F)$p.value) %>% select(Cell_line, Gene, p_val) %>% mutate(z_val = qnorm(1-p_val))
+  z <- dx_d0_p %>% select(Cell_line, Gene, z_val) %>% arrange(Cell_line, Gene) %>% spread(key=Gene, value=z_val)
+}
+
+calculate_score <- function(weights, z_scores, categories){
+    cell_lines <- z_scores$Cell_line
+    scores <- tibble(
+      Cell_line = character(),
+      Category = character(),
+      Score = double()
+    )
+    for (category in names(categories)){
+    genes_of_interest = categories[[category]]
+    cat_w <- weights %>% select(one_of(genes_of_interest))
+    cat_z <- z_scores %>% select(one_of(genes_of_interest))
+    cat_r <- cor(cat_z)
+    
+    denom <- sqrt(sum(as.matrix(t(cat_w)) %*% as.matrix(cat_w) * cat_r))
+    numers <- as.matrix(cat_z) %*% t(as.matrix(cat_w))
+    cat_score <- numers / denom
+    cat_scores <- tibble(
+      Cell_line = cell_lines,
+      Category = category,
+      Score = as.vector(cat_score)
+    )
+    scores <- rbind(scores, cat_scores)
+    }
+    return (scores)
+}
+
+get_scores <- function(dCt, day, cats){
+  calculate_score(
+    get_weights(dCt, day),
+    get_z_scores(dCt, day),
+    cats
+  )
+}
+
+hmap_scores <- function(scores,cats){
+  scores$Category <- as.factor(scores$Category)
+  scores$Category <- fct_relevel(scores$Category, names(cats))
+ggplot(scores ,aes(x=Category, y = Cell_line))+
+    geom_tile(aes(fill=Score)) +
+    geom_text(aes(label=round(Score,2)), color="white") +
+    scale_fill_viridis()+
+    theme_classic()+
+    theme(axis.text.x=element_text(angle=90, vjust=0.5, hjust=1))  
+}
+
+Germ_cells <- list (
+  Pluripotency = c("Pou5f1","Nanog","Sox2","Klf4","Esrrb","Zfp42","Dppa2","Dppa3","Dppa5","Pitx2","Otx2","Cer1"),
+  Ectoderm = c("Fgf5","Hesx1","Olig2","NeuroD1","Nes","Gfap","Pax6","Zic1","FoxD3"),
+  Mesoderm = c("Pdgfra","Flk1","Mesp1","Hoxd9","Nkx2-5","Gata2", "Hand1", "Thy1", "T/Bra"),
+  Endoderm = c("Sox17","Gata1","Gata6","Gsc","Hnf4a","Sox7","Pdx1","Rbm47","Foxa2","Krt-19")
+)
+NDX_d1 <- get_scores(NDX_usr_dCt, 1,Germ_cells)
+NDX_d2 <- get_scores(NDX_usr_dCt, 2,Germ_cells)
+NDX_d3 <- get_scores(NDX_usr_dCt, 3,Germ_cells)
+NDX_d4 <- get_scores(NDX_usr_dCt, 4,Germ_cells)
+NDX_d5 <- get_scores(NDX_usr_dCt, 5,Germ_cells)
+NDX_d6 <- get_scores(NDX_usr_dCt, 6,Germ_cells)
+NDX_d7 <- get_scores(NDX_usr_dCt, 7,Germ_cells)
+d1 <-hmap_scores(NDX_d1, Germ_cells)
+d2 <-hmap_scores(NDX_d2, Germ_cells)
+d3 <-hmap_scores(NDX_d3, Germ_cells)
+d4 <-hmap_scores(NDX_d4, Germ_cells)
+d5 <-hmap_scores(NDX_d5, Germ_cells)
+d6 <- hmap_scores(NDX_d6, Germ_cells)
+d7 <- hmap_scores(NDX_d7, Germ_cells)
+
+ggarrange(d1, d2, d3, d4, d5, d6, d7, ncol=4, nrow=2)
+ggexport(d1, d2, d3, d4, d5, d6, d7, filename="scorecard_NDX.pdf", ncol=4, nrow=2, width = 20, height=10)
+```
+
+```{r}
+# library(FactoMineR)
+pca_biomark <- PCA(NDX_matrix, quali.sup=1:3)
+PCAcoord <- as.data.frame(pca_biomark$ind)
+PCAcoord12 <- cbind.data.frame(PCAcoord[,1], PCAcoord[,2], NDX_matrix[,1], NDX_matrix[,2])
+colnames(PCAcoord12) <- c("PC1", "PC2", "Line", "Day")
+
+ggscatter(PCAcoord12, x="PC1", y="PC2", shape="Day", color="Line")
+```
+
+
